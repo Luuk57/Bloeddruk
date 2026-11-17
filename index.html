@@ -36,12 +36,14 @@
     .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-bottom: 15px; }
     .form-group { display: flex; flex-direction: column; }
     label { font-weight: bold; margin-bottom: 6px; font-size: 0.9rem; color: #1e293b; }
-    input { padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 1rem; background: #fff; }
+    input, select { padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 1rem; background: #fff; }
 
     .btn { background: var(--primary); color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: bold; transition: background 0.2s; width: 100%; }
     .btn:hover { background: var(--primary-dark); }
     .btn-excel { background: #1f7344; }
     .btn-excel:hover { background: #15572b; }
+    .btn-pdf { background: #d9534f; }
+    .btn-pdf:hover { background: #c9302c; }
     .btn-danger { background: var(--danger); padding: 6px 12px; font-size: 0.85rem; width: auto; }
     .btn-danger:hover { background: #bd2130; }
 
@@ -59,6 +61,17 @@
     tr:nth-child(even) { background: #f8fafc; }
 
     .actions-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
+    .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 15px; flex-wrap: wrap; }
+
+    /* Print stijlen voor PDF export */
+    @media print {
+      body { background: white; padding: 0; }
+      .container { box-shadow: none; padding: 0; max-width: 100%; }
+      .form-card, .actions-bar, .filter-bar, .btn, button { display: none !important; }
+      table { border: 1px solid #000; }
+      th, td { border: 1px solid #000; color: #000; }
+      th { background: #ddd !important; color: #000 !important; -webkit-print-color-adjust: exact; }
+    }
   </style>
 
   <!-- PWA Manifest -->
@@ -97,16 +110,28 @@
     </form>
   </div>
 
-  <!-- Overzicht & Export -->
+  <!-- Filter & Overzicht Knoppen -->
   <div class="actions-bar">
-    <h3 style="color: #333;">Overzicht Metingen</h3>
-    <button class="btn btn-excel" style="width: auto;" onclick="exportToExcel()">Exporteer naar Excel (.xlsx)</button>
+    <div class="filter-bar">
+      <label for="periodSelect" style="font-size: 0.9rem; margin-bottom: 0;">Periode:</label>
+      <select id="periodSelect" onchange="loadMeasurements()" style="padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color);">
+        <option value="today">Vandaag</option>
+        <option value="7days">Afgelopen 7 dagen</option>
+        <option value="30days">Afgelopen 30 dagen</option>
+        <option value="all">Alle metingen</option>
+      </select>
+    </div>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+      <button class="btn btn-excel" style="width: auto;" onclick="exportToExcel()">Exporteer naar Excel (.xlsx)</button>
+      <button class="btn btn-pdf" style="width: auto;" onclick="exportPDF()">Print / PDF</button>
+    </div>
   </div>
 
   <div class="table-container">
     <table>
       <thead>
         <tr>
+          <th>Datum</th>
           <th>Tijdstip</th>
           <th>Bloeddruk (Sys/Dia)</th>
           <th>Hartslag</th>
@@ -115,7 +140,7 @@
         </tr>
       </thead>
       <tbody id="measurementsTableBody">
-        <tr><td colspan="5" style="text-align:center;">Geen metingen geregistreerd vandaag.</td></tr>
+        <tr><td colspan="6" style="text-align:center;">Geen metingen geregistreerd.</td></tr>
       </tbody>
     </table>
   </div>
@@ -143,21 +168,39 @@
     loadMeasurements();
   };
 
-  function getLocalDateKey() {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  function getLocalDateKey(date = new Date()) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
 
   function loadMeasurements() {
-    const todayKey = getLocalDateKey();
-    db.collection('blood_pressure_measurements').where('dateKey', '==', todayKey).get().then(snapshot => {
+    const period = document.getElementById('periodSelect').value;
+    let query = db.collection('blood_pressure_measurements');
+
+    if (period === 'today') {
+      const todayKey = getLocalDateKey();
+      query = query.where('dateKey', '==', todayKey);
+    } else if (period === '7days' || period === '30days') {
+      const daysCount = period === '7days' ? 7 : 30;
+      const pastDate = new Date();
+      pastDate.setDate(pastDate.getDate() - daysCount);
+      const pastKey = getLocalDateKey(pastDate);
+      query = query.where('dateKey', '>=', pastKey);
+    }
+    // Voor 'all' filteren we niet op datum
+
+    query.get().then(snapshot => {
       measurementsList = [];
       snapshot.forEach(doc => {
         measurementsList.push({ id: doc.id, ...doc.data() });
       });
 
-      // Sorteer op tijd (nieuwste bovenaan)
-      measurementsList.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+      // Sorteer op datum en tijd (nieuwste bovenaan)
+      measurementsList.sort((a, b) => {
+        let dateCompare = (b.dateKey || '').localeCompare(a.dateKey || '');
+        if (dateCompare !== 0) return dateCompare;
+        return (b.time || '').localeCompare(a.time || '');
+      });
+
       renderTable();
     }).catch(err => {
       console.log("Fout bij ophalen metingen:", err);
@@ -172,7 +215,7 @@
 
     const now = new Date();
     const timeStr = now.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
-    const dateKey = getLocalDateKey();
+    const dateKey = getLocalDateKey(now);
 
     const record = {
       sys,
@@ -183,11 +226,7 @@
       timestamp: firebase.firestore.FieldValue.serverTimestamp()
     };
 
-    db.collection('blood_pressure_measurements').add(record).then(docRef => {
-      record.id = docRef.id;
-      measurementsList.unshift(record);
-      renderTable();
-      // Formulier resetten
+    db.collection('blood_pressure_measurements').add(record).then(() => {
       document.getElementById('sysInput').value = '';
       document.getElementById('diaInput').value = '';
       document.getElementById('hrInput').value = '';
@@ -207,16 +246,11 @@
 
   // Kleurcodering gebaseerd op bloeddruk en hartslag
   function getStatusBadge(sys, dia, hr) {
-    // Te hoge bloeddruk of hartslag -> Rood
     if (sys > 145 || dia > 95 || hr > 100) {
       return `<span class="badge bg-red">Verhoogd / Actie</span>`;
-    }
-    // Licht afwijkend (aan de hoge of lage kant) -> Oranje
-    else if ((sys >= 135 && sys <= 145) || (dia >= 85 && dia <= 95) || (sys < 100 || dia < 60) || (hr < 55)) {
+    } else if ((sys >= 135 && sys <= 145) || (dia >= 85 && dia <= 95) || (sys < 100 || dia < 60) || (hr < 55)) {
       return `<span class="badge bg-orange">Let op / Randgeval</span>`;
-    }
-    // Ideaal / Normaal -> Groen
-    else {
+    } else {
       return `<span class="badge bg-green">Optimaal / Groen</span>`;
     }
   }
@@ -227,7 +261,7 @@
     tbody.innerHTML = '';
 
     if (measurementsList.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">Geen metingen geregistreerd vandaag.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">Geen metingen gevonden voor deze periode.</td></tr>';
       return;
     }
 
@@ -236,6 +270,7 @@
       const badgeHtml = getStatusBadge(item.sys, item.dia, item.hr);
 
       tr.innerHTML = `
+        <td>${item.dateKey || '-'}</td>
         <td>${item.time || '-'}</td>
         <td><b>${item.sys} / ${item.dia} mmHg</b></td>
         <td><b>${item.hr} bpm</b></td>
@@ -266,7 +301,16 @@
     let workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Bloeddruk Metingen");
 
-    XLSX.writeFile(workbook, `Bloeddruk_Metingen_${new Date().toISOString().slice(0,10)}.xlsx`);
+    const period = document.getElementById('periodSelect').value;
+    XLSX.writeFile(workbook, `Bloeddruk_Metingen_${period}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  }
+
+  function exportPDF() {
+    if (!measurementsList || measurementsList.length === 0) {
+      alert("Geen metingen om te printen/exporteren.");
+      return;
+    }
+    window.print();
   }
 </script>
 
