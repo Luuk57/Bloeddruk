@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bloeddruk & Hartslag Monitor (Dialyse)</title>
+  
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  
+  <!-- SheetJS voor Excel Export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+  <style>
+    :root {
+      --primary: #0056b3;
+      --primary-dark: #004090;
+      --success: #28a745;
+      --warning: #ffc107;
+      --danger: #dc3545;
+      --bg-color: #f4f6f9;
+      --card-bg: #ffffff;
+      --text-color: #333333;
+      --border-color: #d1d5db;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: Arial, sans-serif; }
+    body { background-color: var(--bg-color); color: var(--text-color); padding: 15px; }
+
+    .container { max-width: 900px; margin: 0 auto; background: var(--card-bg); padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
+    
+    h1 { color: var(--primary); margin-bottom: 20px; font-size: 1.5rem; border-bottom: 2px solid #eee; padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+    
+    .form-card { background: #f8fafc; border: 1px solid var(--border-color); padding: 20px; border-radius: 10px; margin-bottom: 25px; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px; }
+    .form-group { display: flex; flex-direction: column; }
+    label { font-weight: bold; margin-bottom: 6px; font-size: 0.9rem; color: #1e293b; }
+    input { padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 1rem; background: #fff; }
+
+    .btn { background: var(--primary); color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: bold; transition: background 0.2s; width: 100%; }
+    .btn:hover { background: var(--primary-dark); }
+    .btn-excel { background: #1f7344; }
+    .btn-excel:hover { background: #15572b; }
+    .btn-danger { background: var(--danger); padding: 6px 12px; font-size: 0.85rem; width: auto; }
+    .btn-danger:hover { background: #bd2130; }
+
+    /* Kleurcodering badges */
+    .badge { padding: 6px 12px; border-radius: 6px; font-weight: bold; color: white; display: inline-block; font-size: 0.9rem; }
+    .bg-green { background-color: var(--success); }
+    .bg-orange { background-color: var(--warning); color: #000; }
+    .bg-red { background-color: var(--danger); }
+
+    /* Tabellen */
+    .table-container { overflow-x: auto; margin-top: 15px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 600px; }
+    th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+    th { background: var(--primary); color: white; }
+    tr:nth-child(even) { background: #f8fafc; }
+
+    .actions-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
+  </style>
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0056b3">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="apple-touch-icon" href="icon-192.png">
+</head>
+<body>
+
+<div class="container">
+  <h1>
+    <span>Bloeddruk & Hartslag Monitor</span>
+    <span id="currentDateLabel" style="font-size: 0.9rem; font-weight: normal; color: #555;">Vandaag</span>
+  </h1>
+
+  <!-- Meting Toevoegen Formulier -->
+  <div class="form-card">
+    <h3 style="margin-bottom: 15px; color: var(--primary);">Nieuwe Meting Toevoegen</h3>
+    <form onsubmit="handleMeasurementSubmit(event)">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Bovendruk (Systolisch)</label>
+          <input type="number" id="sysInput" placeholder="bijv. 120" required>
+        </div>
+        <div class="form-group">
+          <label>Onderdruk (Diastolisch)</label>
+          <input type="number" id="diaInput" placeholder="bijv. 80" required>
+        </div>
+        <div class="form-group">
+          <label>Hartslag (bpm)</label>
+          <input type="number" id="hrInput" placeholder="bijv. 70" required>
+        </div>
+        <div class="form-group">
+          <label>UF Advies (optioneel)</label>
+          <input type="number" step="0.1" id="ufInput" placeholder="bijv. 4.2">
+        </div>
+      </div>
+      <button type="submit" class="btn">Meting Opslaan</button>
+    </form>
+  </div>
+
+  <!-- Overzicht & Export -->
+  <div class="actions-bar">
+    <h3 style="color: #333;">Overzicht Metingen</h3>
+    <button class="btn btn-excel" style="width: auto;" onclick="exportToExcel()">Exporteer naar Excel (.xlsx)</button>
+  </div>
+
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Tijdstip</th>
+          <th>Bloeddruk (Sys/Dia)</th>
+          <th>Hartslag</th>
+          <th>UF Advies</th>
+          <th>Status / Kleurcodering</th>
+          <th>Actie</th>
+        </tr>
+      </thead>
+      <tbody id="measurementsTableBody">
+        <tr><td colspan="6" style="text-align:center;">Geen metingen geregistreerd vandaag.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  // Firebase configuratie
+  const firebaseConfig = {
+    apiKey: "AIzaSyBWaKFaJ1sUhSvXqK2pOCSDwJ3eMqDJag8",
+    authDomain: "dialysedbase.firebaseapp.com",
+    projectId: "dialysedbase",
+    storageBucket: "dialysedbase.firebasestorage.app",
+    messagingSenderId: "36507381882",
+    appId: "1:36507381882:web:6cf9725f87c963c51ccbc3"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
+
+  let measurementsList = [];
+
+  window.onload = function() {
+    const todayStr = new Date().toLocaleDateString('nl-NL', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    document.getElementById('currentDateLabel').innerText = todayStr;
+    loadMeasurements();
+  };
+
+  function getLocalDateKey() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function loadMeasurements() {
+    const todayKey = getLocalDateKey();
+    db.collection('blood_pressure_measurements').where('dateKey', '==', todayKey).get().then(snapshot => {
+      measurementsList = [];
+      snapshot.forEach(doc => {
+        measurementsList.push({ id: doc.id, ...doc.data() });
+      });
+
+      // Sorteer op tijd (nieuwste bovenaan)
+      measurementsList.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+      renderTable();
+    }).catch(err => {
+      console.log("Fout bij ophalen metingen:", err);
+    });
+  }
+
+  function handleMeasurementSubmit(event) {
+    event.preventDefault();
+    const sys = parseInt(document.getElementById('sysInput').value);
+    const dia = parseInt(document.getElementById('diaInput').value);
+    const hr = parseInt(document.getElementById('hrInput').value);
+    const ufVal = document.getElementById('ufInput').value;
+    const uf = ufVal !== "" ? parseFloat(ufVal) : null;
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+    const dateKey = getLocalDateKey();
+
+    const record = {
+      sys,
+      dia,
+      hr,
+      uf,
+      time: timeStr,
+      dateKey,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    };
+
+    db.collection('blood_pressure_measurements').add(record).then(docRef => {
+      record.id = docRef.id;
+      measurementsList.unshift(record);
+      renderTable();
+      // Formulier resetten
+      document.getElementById('sysInput').value = '';
+      document.getElementById('diaInput').value = '';
+      document.getElementById('hrInput').value = '';
+      document.getElementById('ufInput').value = '';
+      loadMeasurements();
+    }).catch(err => {
+      alert("Fout bij opslaan: " + err.message);
+    });
+  }
+
+  function deleteMeasurement(id) {
+    if (confirm("Weet je zeker dat je deze meting wilt verwijderen?")) {
+      db.collection('blood_pressure_measurements').doc(id).delete().then(() => {
+        loadMeasurements();
+      });
+    }
+  }
+
+  // Bepaal kleurcodering op basis van dialyse-regels voor UF-advies en bloeddruk
+  function getStatusBadge(sys, dia, uf) {
+    // UF-advies regels: >= 4.5 is rood, >= 4.0 is oranje, < 4.0 is groen
+    if (uf !== null && !isNaN(uf)) {
+      if (uf >= 4.5) {
+        return `<span class="badge bg-red">UF: ${uf} (Hoog / Rood)</span>`;
+      } else if (uf >= 4.0) {
+        return `<span class="badge bg-orange">UF: ${uf} (Let op / Oranje)</span>`;
+      } else {
+        return `<span class="badge bg-green">UF: ${uf} (Goed / Groen)</span>`;
+      }
+    }
+
+    // Algemene bloeddruk indicatie als geen UF is ingevuld
+    if (sys > 140 || dia > 90) {
+      return `<span class="badge bg-red">Verhoogd</span>`;
+    } else if (sys < 100 || dia < 60) {
+      return `<span class="badge bg-orange">Laag</span>`;
+    } else {
+      return `<span class="badge bg-green">Normaal</span>`;
+    }
+  }
+
+  function renderTable() {
+    const tbody = document.getElementById('measurementsTableBody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    if (measurementsList.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">Geen metingen geregistreerd vandaag.</td></tr>';
+      return;
+    }
+
+    measurementsList.forEach(item => {
+      const tr = document.createElement('tr');
+      const badgeHtml = getStatusBadge(item.sys, item.dia, item.uf);
+      const ufDisplay = (item.uf !== null && item.uf !== undefined) ? `${item.uf} L` : '-';
+
+      tr.innerHTML = `
+        <td>${item.time || '-'}</td>
+        <td><b>${item.sys} / ${item.dia} mmHg</b></td>
+        <td><b>${item.hr} bpm</b></td>
+        <td><b>${ufDisplay}</b></td>
+        <td>${badgeHtml}</td>
+        <td>
+          <button class="btn btn-danger" onclick="deleteMeasurement('${item.id}')">Verwijderen</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function exportToExcel() {
+    if (!measurementsList || measurementsList.length === 0) {
+      alert("Geen metingen om te exporteren.");
+      return;
+    }
+
+    let excelData = measurementsList.map(item => ({
+      "Datum": item.dateKey,
+      "Tijdstip": item.time,
+      "Bovendruk (Sys)": item.sys,
+      "Onderdruk (Dia)": item.dia,
+      "Hartslag (bpm)": item.hr,
+      "UF Advies": item.uf !== null ? item.uf : ""
+    }));
+
+    let worksheet = XLSX.utils.json_to_sheet(excelData);
+    let workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Bloeddruk Metingen");
+
+    XLSX.writeFile(workbook, `Bloeddruk_Metingen_${new Date().toISOString().slice(0,10)}.xlsx`);
+  }
+</script>
+
+<!-- Service Worker Registratie -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js')
+        .then(reg => console.log('ServiceWorker registered! Scope: ', reg.scope))
+        .catch(err => console.log('ServiceWorker registration failed: ', err));
+    });
+  }
+</script>
+
+</body>
+</html>
